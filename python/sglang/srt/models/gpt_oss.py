@@ -636,6 +636,7 @@ class GptOssMoeAttention(nn.Module):
             return hidden_states
         # attn_output = self.attn(*inner_state)
         # todo: check if sinks need fp32 before exp
+        # print
         attn_output = self.attn(*inner_state)
         # o_ref = self.flashinfer_attention_ref(inner_state, sinks)
 

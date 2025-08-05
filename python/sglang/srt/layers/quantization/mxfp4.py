@@ -18,11 +18,8 @@ from sglang.srt.utils import set_weight_attrs
 from sglang.srt.distributed import get_tensor_model_parallel_rank
 from sglang.srt.layers.quantization.mxfp4_moe import (
     fused_experts_mxfp4_oai,
-    shuffle_for_activation_kernel,
     quantize_to_mxfp4,
-    get_swizzle_type,
     swizzle_weight_and_scale,
-    pad_weight_and_scale_on_hopper,
 )
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 
@@ -96,16 +93,10 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
         super().__init__()
         self.is_checkpoint_mxfp4_serialized = quant_config.is_checkpoint_mxfp4_serialized
         self.moe_activation_scheme = quant_config.moe_activation_scheme
-
         self.swiglu_alpha = swiglu_alpha
         self.swiglu_beta = swiglu_beta
         self.bias = bias
         self.activation_dtype = activation_dtype
-        self.swizzle_value, self.swizzle_scale = get_swizzle_type(activation_dtype)
-
-    def set_activation_dtype(self, activation_dtype: torch.dtype):
-        self.activation_dtype = activation_dtype
-        self.swizzle_value, self.swizzle_scale = get_swizzle_type(activation_dtype)
 
     def create_weights(
         self,
@@ -216,40 +207,33 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
             w2_weight_scale = layer.w2_scale.data
 
         w13_weight_fp4 = torch.transpose(w13_weight_fp4, 1, 2)
-        # w13_weight_fp4 = shuffle_for_activation_kernel(w13_weight_fp4)
 
         w13_weight_scale = torch.transpose(w13_weight_scale, 1, 2)
-        # w13_weight_scale = shuffle_for_activation_kernel(w13_weight_scale)
 
         w2_weight_fp4 = torch.transpose(w2_weight_fp4, 1, 2)
         w2_weight_scale = torch.transpose(w2_weight_scale, 1, 2)
 
-        w13_weight_fp4, w13_weight_scale = pad_weight_and_scale_on_hopper(
-            w13_weight_fp4, w13_weight_scale, self.swizzle_scale)
-        w2_weight_fp4, w2_weight_scale = pad_weight_and_scale_on_hopper(
-            w2_weight_fp4, w2_weight_scale, self.swizzle_scale)
+        w13_weight_fp4, w13_weight_scale = swizzle_weight_and_scale(
+            w13_weight_fp4, w13_weight_scale)
+        w2_weight_fp4, w2_weight_scale = swizzle_weight_and_scale(
+            w2_weight_fp4, w2_weight_scale)
 
-        w13_weight_fp4, w13_weight_scale, actual_w13_scale_shape = swizzle_weight_and_scale(
-            w13_weight_fp4, w13_weight_scale, self.swizzle_value, self.swizzle_scale)
-        w2_weight_fp4, w2_weight_scale, actual_w2_scale_shape = swizzle_weight_and_scale(
-            w2_weight_fp4, w2_weight_scale, self.swizzle_value, self.swizzle_scale)
-
-        self.actual_w13_weight_shape = actual_w13_scale_shape
-        self.actual_w2_weight_shape = actual_w2_scale_shape
-
-        layer.w13_weight.data = w13_weight_fp4
+        layer._parameters.pop("w13_weight", None)
+        layer.w13_weight = w13_weight_fp4
         torch.cuda.empty_cache()
-        layer.w2_weight.data = w2_weight_fp4
+        layer._parameters.pop("w2_weight", None)
+        layer.w2_weight = w2_weight_fp4
         torch.cuda.empty_cache()
         if self.bias:
             w13_bias = layer.w13_bias.data.to(torch.float32)
             w2_bias = layer.w2_bias.data.to(torch.float32)
-            # w13_bias = shuffle_for_activation_kernel(w13_bias)
             layer.w13_bias.data = w13_bias
             torch.cuda.empty_cache()
             layer.w2_bias.data = w2_bias
             torch.cuda.empty_cache()
+        layer._parameters.pop("w13_weight_scale", None)
         layer.w13_weight_scale = w13_weight_scale
+        layer._parameters.pop("w2_weight_scale", None)
         layer.w2_weight_scale = w2_weight_scale
 
     def apply(
@@ -308,13 +292,9 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
             swiglu_beta=self.swiglu_beta,
             dtype=x.dtype,
             activation_dtype=self.activation_dtype,
-            swizzle_value=self.swizzle_value,
-            swizzle_scale=self.swizzle_scale,
-            actual_w13_scale_shape=self.actual_w13_weight_shape,
-            actual_w2_scale_shape=self.actual_w2_weight_shape,
             intermediate_size=self.intermediate_size,
             hidden_size=self.hidden_size,
-            clamp_limit=7.0,
+            swiglu_limit=7.0,
         )
 
     def forward_cpu(self, *args, **kwargs) -> torch.Tensor:
