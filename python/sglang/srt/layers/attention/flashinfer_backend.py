@@ -648,14 +648,17 @@ class FlashInferAttnBackend(AttentionBackend):
                         layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                     )
 
-            # NOTE(ganler): a workaround to use .run() instead of .forward() for sink attention
-            # because .forward() is deprecated and does not support extra arguments.
-            # We manually set the config attributes on the wrapper object before calling .run().
-            prefill_wrapper_paged._causal = not layer.is_cross_attention
-            prefill_wrapper_paged._logits_soft_cap = logits_soft_cap
-            prefill_wrapper_paged._window_left = window_left
+
+
 
             if hasattr(layer, 'enable_attention_sink') and layer.enable_attention_sink and layer.attention_sinks is not None:
+                
+                # NOTE(ganler): a workaround to use .run() instead of .forward() for sink attention
+                # because .forward() is deprecated and does not support extra arguments.
+                # We manually set the config attributes on the wrapper object before calling .run().
+                prefill_wrapper_paged._causal = not layer.is_cross_attention
+                prefill_wrapper_paged._logits_soft_cap = logits_soft_cap
+                prefill_wrapper_paged._window_left = window_left 
                 # For JIT kernels, sm_scale is passed as a kernel argument, so the one on the object is ignored.
                 prefill_wrapper_paged._sm_scale = None
                 o = prefill_wrapper_paged.run(
@@ -684,15 +687,15 @@ class FlashInferAttnBackend(AttentionBackend):
             if layer.attn_type == AttentionType.ENCODER_ONLY:
                 save_kv_cache = False
                 causal = False
-            self.prefill_wrapper_ragged._logits_soft_cap = logits_soft_cap
-            self.prefill_wrapper_ragged._window_left = window_left
 
-            if self.forward_metadata.extend_no_prefix:
-                self.prefill_wrapper_ragged._causal = True
 
+            if self.forward_metadata.extend_no_prefix:    
                 if hasattr(layer, 'enable_attention_sink') and layer.enable_attention_sink and layer.attention_sinks is not None:
                     # For JIT kernels, sm_scale is passed as a kernel argument.
                     self.prefill_wrapper_ragged._sm_scale = None
+                    self.prefill_wrapper_ragged._logits_soft_cap = logits_soft_cap
+                    self.prefill_wrapper_ragged._window_left = window_left
+                    self.prefill_wrapper_ragged._causal = True
                     o = self.prefill_wrapper_ragged.run(
                         q.view(-1, layer.tp_q_head_num, layer.head_dim),
                         k.view(-1, layer.tp_k_head_num, layer.head_dim),
@@ -714,18 +717,16 @@ class FlashInferAttnBackend(AttentionBackend):
                     )
             else:
                 # extend with prefix
-                self.prefill_wrapper_ragged._causal = True
-                self.prefill_wrapper_ragged._window_left = window_left
-                prefill_wrapper_paged._causal = False
-                prefill_wrapper_paged._logits_soft_cap = logits_soft_cap
-                prefill_wrapper_paged._window_left = window_left
-                prefill_wrapper_paged._k_scale = layer.k_scale
-                prefill_wrapper_paged._v_scale = layer.v_scale
-
                 if hasattr(layer, 'enable_attention_sink') and layer.enable_attention_sink and layer.attention_sinks is not None:
                     self.prefill_wrapper_ragged._sm_scale = None
                     prefill_wrapper_paged._sm_scale = None
-
+                    self.prefill_wrapper_ragged._causal = True
+                    self.prefill_wrapper_ragged._window_left = window_left
+                    prefill_wrapper_paged._causal = False
+                    prefill_wrapper_paged._logits_soft_cap = logits_soft_cap
+                    prefill_wrapper_paged._window_left = window_left
+                    prefill_wrapper_paged._k_scale = layer.k_scale
+                    prefill_wrapper_paged._v_scale = layer.v_scale
                     o1, s1 = self.prefill_wrapper_ragged.run_return_lse(
                         q.view(-1, layer.tp_q_head_num, layer.head_dim),
                         k.view(-1, layer.tp_k_head_num, layer.head_dim),
@@ -804,15 +805,16 @@ class FlashInferAttnBackend(AttentionBackend):
                 forward_batch.token_to_kv_pool.set_kv_buffer(
                     layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                 )
-        # NOTE(ganler): a workaround to use .run() instead of .forward() for sink attention
-        # because .forward() is deprecated and does not support extra arguments.
-        # We manually set the config attributes on the wrapper object before calling .run().
-        decode_wrapper._logits_soft_cap = layer.logit_cap
-        decode_wrapper._window_left = window_left
+
 
         # Call the wrapped function
         if hasattr(layer, 'enable_attention_sink') and layer.enable_attention_sink and layer.attention_sinks is not None:
             # For JIT kernels, sm_scale is passed as a kernel argument, so the one on the object is ignored.
+            # NOTE(ganler): a workaround to use .run() instead of .forward() for sink attention
+            # because .forward() is deprecated and does not support extra arguments.
+            # We manually set the config attributes on the wrapper object before calling .run().
+            decode_wrapper._logits_soft_cap = layer.logit_cap
+            decode_wrapper._window_left = window_left
             decode_wrapper._sm_scale = None
             o = decode_wrapper.run(
                 q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim),
