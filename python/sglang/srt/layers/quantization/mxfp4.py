@@ -17,7 +17,7 @@ from sglang.srt.layers.quantization.base_config import (
 from sglang.srt.utils import set_weight_attrs
 from sglang.srt.distributed import get_tensor_model_parallel_rank
 from sglang.srt.layers.quantization.mxfp4_moe import (
-    fused_experts_mxfp4_oai,
+    fused_experts_mxfp4,
     quantize_to_mxfp4,
     swizzle_weight_and_scale,
 )
@@ -275,7 +275,7 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
         w2_bias = None
         if get_tensor_model_parallel_rank() == 0:
             w2_bias = getattr(layer, 'w2_bias', None)
-        return fused_experts_mxfp4_oai(
+        return fused_experts_mxfp4(
             hidden_states=x,
             w13=layer.w13_weight.data,
             w2=layer.w2_weight.data,

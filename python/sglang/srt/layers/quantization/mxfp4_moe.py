@@ -17,17 +17,6 @@ from triton_kernels.tensor_details import layout
 from triton_kernels.numerics_details.mxfp import downcast_to_mxfp_torch
 
 
-def shuffle_for_activation_kernel(weight: torch.Tensor) -> torch.Tensor:
-    temp_weight = weight.clone()
-    last_dim = weight.shape[-1]
-    if weight.dim() == 3:
-        weight[:, :, 1::2] = temp_weight[:, :, last_dim // 2:]
-        weight[:, :, 0::2] = temp_weight[:, :, 0:last_dim // 2]
-    elif weight.dim() == 2:
-        weight[:, 1::2] = temp_weight[:, last_dim // 2:]
-        weight[:, 0::2] = temp_weight[:, 0:last_dim // 2]
-    return weight
-
 def quantize_to_mxfp4(tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     tensor = tensor.transpose(1, 2).contiguous()
     tensor_fp4, tensor_scales = downcast_to_mxfp_torch(tensor, torch.uint8, axis=1)
@@ -95,7 +84,7 @@ def swiglu_torch(a: torch.Tensor, alpha: float, beta: float,
     out = out_glu * (a_linear + beta)
     return out
 
-def fused_experts_mxfp4_oai(
+def fused_experts_mxfp4(
     hidden_states: torch.Tensor,
     w13: torch.Tensor,
     w2: torch.Tensor,
@@ -116,6 +105,7 @@ def fused_experts_mxfp4_oai(
     hidden_size: int = 0,
     swiglu_limit: Optional[float] = None,
 ) -> torch.Tensor:
+    assert activation == "swiglu"
     if activation_dtype == torch.float8_e4m3fn:
         hidden_states, hidden_states_scale = quantize_fp8_per_tensor(hidden_states, fc31_input_dequant)
     else:
@@ -164,7 +154,6 @@ def fused_experts_mxfp4_oai(
                             precision_config=pc1)
         act_out = swiglu_torch(act_out, alpha, beta, swiglu_limit)
 
-
     act_out = maybe_remove_padding(
             act_out, intermediate_size).contiguous()
 
@@ -183,7 +172,7 @@ def fused_experts_mxfp4_oai(
     gemm2_output = matmul_ogs(
         act_out,
         gemm2_weights,
-        w2_bias,  # Bias
+        w2_bias,
         rdata,
         scatter_indx=scatter_indx,
         precision_config=pc2,
