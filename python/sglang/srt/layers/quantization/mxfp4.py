@@ -193,6 +193,11 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
             layer.register_parameter("w13_bias", None)
             layer.register_parameter("w2_bias", None)
 
+    @staticmethod
+    def maybe_update_stride(weight: torch.Tensor) -> torch.Tensor:
+        assert weight.dim() == 3
+        return weight.transpose(1, 2).contiguous().transpose(1, 2)
+
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         if not self.is_checkpoint_mxfp4_serialized:
             w1_weight_fp4, w1_weight_scale = quantize_to_mxfp4(layer.w13_weight.data[:, :self.intermediate_size, :])
@@ -219,10 +224,10 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
             w2_weight_fp4, w2_weight_scale)
 
         layer._parameters.pop("w13_weight", None)
-        layer.w13_weight = w13_weight_fp4
+        layer.w13_weight = Mxfp4MoEMethod.maybe_update_stride(w13_weight_fp4.data)
         torch.cuda.empty_cache()
         layer._parameters.pop("w2_weight", None)
-        layer.w2_weight = w2_weight_fp4
+        layer.w2_weight = Mxfp4MoEMethod.maybe_update_stride(w2_weight_fp4.data)
         torch.cuda.empty_cache()
         if self.bias:
             w13_bias = layer.w13_bias.data.to(torch.float32)
