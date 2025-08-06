@@ -67,7 +67,7 @@ def maybe_remove_padding(gemm_output: torch.Tensor,
     assert gemm_output.dim() == 2
     if gemm_output.shape[-1] != expected_size:
         assert gemm_output.shape[
-            -1] % 256 == 0, "The padding is not done correctly"
+            -1] % 128 == 0, f"The padding is not done correctly"
         gemm_output = gemm_output[:, :expected_size]
     return gemm_output
 
@@ -137,7 +137,6 @@ def fused_experts_mxfp4(
         act = FusedActivation(
             FnSpecs("swiglu", triton_kernels.swiglu.swiglu_fn,
                     ("alpha", "limit")), (alpha, swiglu_limit), 2)
-
         act_out = matmul_ogs(hidden_states,
                             gemm1_weights,
                             w1_bias,

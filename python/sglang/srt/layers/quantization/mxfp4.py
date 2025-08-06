@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import torch
+import torch.nn.functional as F
 from torch.nn import Module
 from torch.nn.parameter import Parameter
 
@@ -194,6 +195,22 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
             layer.register_parameter("w2_bias", None)
 
     @staticmethod
+    def _maybe_pad_weight_and_scale(weight, scale=None):
+        if torch.cuda.get_device_capability()[0] == 9:
+            assert weight.dim() in [2,
+                                    3], "Weight should be 2D or 3D tensor"
+            out_dim = weight.shape[-1]
+            assert scale is None or scale.shape[
+                -1] == out_dim, "Out dim of weight and scale should match"
+            pad_size = (256 - out_dim % 256) % 256
+            weight = F.pad(
+                weight,
+                (0, pad_size))
+            if scale is not None:
+                scale = F.pad(scale, (0, pad_size))
+        return (weight, scale) if scale is not None else weight
+
+    @staticmethod
     def maybe_update_stride(weight: torch.Tensor) -> torch.Tensor:
         assert weight.dim() == 3
         return weight.transpose(1, 2).contiguous().transpose(1, 2)
@@ -218,17 +235,29 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
         w2_weight_fp4 = torch.transpose(w2_weight_fp4, 1, 2)
         w2_weight_scale = torch.transpose(w2_weight_scale, 1, 2)
 
-        w13_weight_fp4, w13_weight_scale = swizzle_weight_and_scale(
-            w13_weight_fp4, w13_weight_scale)
-        w2_weight_fp4, w2_weight_scale = swizzle_weight_and_scale(
-            w2_weight_fp4, w2_weight_scale)
+        w13_weight_fp4, w13_weight_scale = self._maybe_pad_weight_and_scale(w13_weight_fp4, w13_weight_scale)
+        w2_weight_fp4, w2_weight_scale = self._maybe_pad_weight_and_scale(w2_weight_fp4, w2_weight_scale)
 
         layer._parameters.pop("w13_weight", None)
-        layer.w13_weight = Mxfp4MoEMethod.maybe_update_stride(w13_weight_fp4.data)
+        layer._parameters.pop("w13_scale", None)
+        # layer.w13_weight = Mxfp4MoEMethod.maybe_update_stride(w13_weight_fp4.data)
         torch.cuda.empty_cache()
+        
+        w13_weight_fp4, w13_weight_scale = swizzle_weight_and_scale(
+            w13_weight_fp4, w13_weight_scale)
+        layer.w13_weight = w13_weight_fp4
+        layer.w13_scale = w13_weight_scale
+
         layer._parameters.pop("w2_weight", None)
-        layer.w2_weight = Mxfp4MoEMethod.maybe_update_stride(w2_weight_fp4.data)
+        layer._parameters.pop("w2_scale", None)
+        # layer.w2_weight = Mxfp4MoEMethod.maybe_update_stride(w2_weight_fp4.data)
+
         torch.cuda.empty_cache()
+        w2_weight_fp4, w2_weight_scale = swizzle_weight_and_scale(
+            w2_weight_fp4, w2_weight_scale)
+        layer.w2_weight = w2_weight_fp4
+        layer.w2_scale = w2_weight_scale
+
         if self.bias:
             w13_bias = layer.w13_bias.data.to(torch.float32)
             w2_bias = layer.w2_bias.data.to(torch.float32)
@@ -236,10 +265,6 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
             torch.cuda.empty_cache()
             layer.w2_bias.data = w2_bias
             torch.cuda.empty_cache()
-        layer._parameters.pop("w13_weight_scale", None)
-        layer.w13_weight_scale = w13_weight_scale
-        layer._parameters.pop("w2_weight_scale", None)
-        layer.w2_weight_scale = w2_weight_scale
 
     def apply(
         self,
@@ -282,14 +307,14 @@ class Mxfp4MoEMethod(FusedMoEMethodBase, CustomOp):
             w2_bias = getattr(layer, 'w2_bias', None)
         return fused_experts_mxfp4(
             hidden_states=x,
-            w13=layer.w13_weight.data,
-            w2=layer.w2_weight.data,
+            w13=layer.w13_weight,
+            w2=layer.w2_weight,
             expert_logits=expert_logits,
             top_k=top_k,
             fc31_input_dequant=getattr(layer, 'fc31_input_dequant', None),
             fc2_input_dequant=getattr(layer, 'fc2_input_dequant', None),
-            w13_scale=layer.w13_weight_scale,
-            w2_scale=layer.w2_weight_scale,
+            w13_scale=layer.w13_scale,
+            w2_scale=layer.w2_scale,
             activation=activation,
             w1_bias=getattr(layer, 'w13_bias', None),
             w2_bias=w2_bias,
