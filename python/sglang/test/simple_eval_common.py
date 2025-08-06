@@ -27,13 +27,23 @@ Message = Dict[str, Any]  # keys role, content
 MessageList = List[Message]
 
 
+@dataclass
+class SamplerResponse:
+    """
+    Response from a sampler.
+    """
+    response_text: str
+    actual_queried_message_list: MessageList
+    response_metadata: dict[str, Any]
+
+
 class SamplerBase:
     """
     Base class for defining a sampling model, which can be evaluated,
     or used as part of the grading process.
     """
 
-    def __call__(self, message_list: MessageList) -> str:
+    def __call__(self, message_list: MessageList) -> SamplerResponse:
         raise NotImplementedError()
 
 
@@ -47,6 +57,7 @@ class EvalResult:
     metrics: Optional[Dict[str, float]]  # other metrics
     htmls: List[str]  # strings of valid HTML
     convos: List[MessageList]  # sampled conversations
+    metadata: Optional[dict[str, Any]] = None  # Extra data such as rubric scores or sollen
 
 
 @dataclass
@@ -59,6 +70,9 @@ class SingleEvalResult:
     metrics: Dict[str, float] = field(default_factory=dict)
     html: Optional[str] = None
     convo: Optional[MessageList] = None  # sampled conversation
+    example_level_metadata: Optional[dict[str, Any]] = (
+        None  # Extra data such as rubric scores or sollen
+    )
 
 
 class Eval:
@@ -91,6 +105,7 @@ class ChatCompletionSampler(SamplerBase):
         model: Optional[str] = None,
         system_message: Optional[str] = None,
         temperature: float = 0.0,
+        top_p: float = 1.0,
         max_tokens: int = 2048,
     ):
         self.client = OpenAI(base_url=base_url, http_client=LargerHttpxClient())
@@ -101,8 +116,12 @@ class ChatCompletionSampler(SamplerBase):
         self.model = model
         self.system_message = system_message
         self.temperature = temperature
+        self.top_p = top_p
         self.max_tokens = max_tokens
         self.image_format = "url"
+        print("***********************ChatCompletionSampler***************************")
+        print(f"\n[Model] {self.model}\n[System Message] {self.system_message}\n[Temperature] {self.temperature}\n[Top P] {self.top_p}\n[Max Tokens] {self.max_tokens}")
+        print("***********************************************************************")
 
     def _handle_image(
         self,
@@ -125,7 +144,7 @@ class ChatCompletionSampler(SamplerBase):
     def _pack_message(self, role: str, content: Any):
         return {"role": str(role), "content": content}
 
-    def __call__(self, message_list: MessageList) -> str:
+    def __call__(self, message_list: MessageList) -> SamplerResponse:
         if self.system_message:
             message_list = [
                 self._pack_message("system", self.system_message)
@@ -137,13 +156,25 @@ class ChatCompletionSampler(SamplerBase):
                     model=self.model,
                     messages=message_list,
                     temperature=self.temperature,
+                    top_p=self.top_p,
                     max_tokens=self.max_tokens,
                 )
-                return response.choices[0].message.content
+                content = response.choices[0].message.content
+                if content is None:
+                    raise ValueError("OpenAI API returned empty response; retrying")
+                return SamplerResponse(
+                    response_text=content,
+                    response_metadata={"usage": response.usage},
+                    actual_queried_message_list=message_list,
+                )
             # NOTE: BadRequestError is triggered once for MMMU, please uncomment if you are rerunning MMMU
             except openai.BadRequestError as e:
                 print("Bad Request Error", e)
-                return ""
+                return SamplerResponse(
+                    response_text="No response (bad request).",
+                    response_metadata={"usage": None},
+                    actual_queried_message_list=message_list,
+                )
             except Exception as e:
                 exception_backoff = 2**trial  # expontial back off
                 print(
@@ -166,8 +197,19 @@ C) {C}
 D) {D}
 """.strip()
 
+# QUERY_TEMPLATE_MULTICHOICE = """{Question}
+
+# (A) {A}
+# (B) {B}
+# (C) {C}
+# (D) {D}
+
+# Express your final answer as the corresponding option 'A', 'B', 'C', or 'D'.""".strip()
+
 ANSWER_PATTERN_MULTICHOICE = r"(?i)Answer\s*:\s*([A-D])"
+# ANSWER_PATTERN_MULTICHOICE = r"(?i)Answer[ \t]*:[^a-zA-Z]*\$?([A-D])\$?"
 ANSWER_PATTERN = r"(?i)Answer\s*:\s*([^\n]+)"
+
 
 
 EQUALITY_TEMPLATE = r"""

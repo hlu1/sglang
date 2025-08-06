@@ -1,19 +1,18 @@
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
-import sglang.srt.layers.moe.fused_moe_triton.fused_moe  # noqa
 from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
     fused_experts,
     get_config_file_name,
+    moe_align_block_size,
+    try_get_optimal_moe_config,
 )
 from sglang.srt.layers.moe.fused_moe_triton.layer import (
     FusedMoE,
-    FusedMoEMethodBase,
     FusedMoeWeightScaleSupported,
 )
 
 _config: Optional[Dict[str, Any]] = None
-
 
 @contextmanager
 def override_config(config):
@@ -34,7 +33,8 @@ __all__ = [
     "FusedMoeWeightScaleSupported",
     "override_config",
     "get_config",
-    "fused_moe",
     "fused_experts",
     "get_config_file_name",
+    "moe_align_block_size",
+    "try_get_optimal_moe_config",
 ]
