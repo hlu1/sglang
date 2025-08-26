@@ -317,6 +317,7 @@ def parse_output_message(message: Message):
         )
         output_items.append(text_item)
     else:
+        print(message)
         raise ValueError(f"Unknown channel: {message.channel}")
     return output_items
 

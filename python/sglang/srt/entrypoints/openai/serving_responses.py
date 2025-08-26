@@ -537,7 +537,11 @@ class OpenAIServingResponses(OpenAIServingChat):
         output_items = []
         num_init_messages = context.num_init_messages
         for msg in context.messages[num_init_messages:]:
-            output_items.extend(parse_output_message(msg))
+            try:
+                output_items.extend(parse_output_message(msg))
+            except Exception as e:
+                print(context.messages)
+                raise e
         # Handle the generation stopped in the middle (if any).
         last_items = parse_remaining_state(context.parser)
         if last_items:
@@ -1225,6 +1229,8 @@ class OpenAIServingResponses(OpenAIServingChat):
             )
 
             async for res in generator:
+                print("res in generator")
+                print(res)
                 context.append_output(res)
                 # NOTE(woosuk): The stop condition is handled by the engine.
                 yield context
