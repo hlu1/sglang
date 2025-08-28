@@ -23,9 +23,22 @@ limitations under the License.
 #ifndef USE_ROCM
 #include <cub/cub.cuh>
 #include <cub/util_type.cuh>
+
+// Define reduction operators based on CUDA version
+// CUDA 13 (12.9+) deprecated cub::Max/Min in favor of cuda::maximum/minimum
+#if CUDA_VERSION >= 12090
+using MaxReduceOp = cuda::maximum<>;
+using SumOp = cuda::std::plus<>;
+#else
+using MaxReduceOp = cub::Max;
+using SumOp = cub::Sum;
+#endif
+
 #else
 #include <hipcub/hipcub.hpp>
 #include <hipcub/util_type.hpp>
+using MaxReduceOp = cub::Max;
+using SumOp = cub::Sum;
 #endif
 
 #include "utils.h"
@@ -72,7 +85,7 @@ __launch_bounds__(TPB) __global__
 
   const int thread_row_offset = blockIdx.x * num_cols;
 
-  cub::Sum sum;
+  SumOp sum;
   float threadData(-FLT_MAX);
 
   // Don't touch finished rows.
@@ -85,7 +98,7 @@ __launch_bounds__(TPB) __global__
     threadData = max(convert_to_float<T>(input[idx]), threadData);
   }
 
-  const float maxElem = BlockReduce(tmpStorage).Reduce(threadData, cub::Max());
+  const float maxElem = BlockReduce(tmpStorage).Reduce(threadData, MaxReduceOp());
 
   if (threadIdx.x == 0) {
     float_max = maxElem;

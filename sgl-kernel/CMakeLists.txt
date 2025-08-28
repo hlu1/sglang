@@ -21,8 +21,11 @@ enable_language(CUDA)
 find_package(CUDAToolkit REQUIRED)
 set_property(GLOBAL PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 
+option(SGL_KERNEL_ENABLE_MSCCLPP "Enable MSCCL++ integration" ON)
+
 message(STATUS "Detected CUDA_VERSION=${CUDA_VERSION}")
 if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "13.0")
+    set(SGL_KERNEL_ENABLE_MSCCLPP OFF) # mscclpp doesn't support cuda13
     message("CUDA_VERSION ${CUDA_VERSION} >= 13.0")
 elseif ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8")
     message("CUDA_VERSION ${CUDA_VERSION} >= 12.8")
@@ -57,6 +60,9 @@ if("${CUDA_VERSION}" VERSION_EQUAL "12.8")
 elseif("${CUDA_VERSION}" VERSION_EQUAL "12.9")
   set(DeepGEMM_REPO "https://github.com/sgl-project/DeepGEMM")
   set(DeepGEMM_TAG "blackwell")
+elseif("${CUDA_VERSION}" VERSION_EQUAL "13.0")
+  set(DeepGEMM_REPO "https://github.com/sgl-project/DeepGEMM")
+  set(DeepGEMM_TAG "blackwell")
 else()
   set(DeepGEMM_REPO "https://github.com/deepseek-ai/DeepGEMM")
   set(DeepGEMM_TAG "391755ada0ffefa9a6a52b6f14dcaf22d1a463e0")
@@ -83,7 +89,7 @@ FetchContent_Populate(repo-triton)
 FetchContent_Declare(
     repo-flashinfer
     GIT_REPOSITORY https://github.com/flashinfer-ai/flashinfer.git
-    GIT_TAG        9220fb3443b5a5d274f00ca5552f798e225239b7
+    GIT_TAG        afad99c7e000dfffeec18aa4555b367f759aa8a8
     GIT_SHALLOW    OFF
 )
 FetchContent_Populate(repo-flashinfer)
@@ -97,7 +103,8 @@ FetchContent_Declare(
 )
 FetchContent_Populate(repo-flash-attention)
 
-# mscclpp
+# mscclpp (optional)
+if (SGL_KERNEL_ENABLE_MSCCLPP)
 FetchContent_Declare(
     repo-mscclpp
     GIT_REPOSITORY https://github.com/microsoft/mscclpp.git
@@ -105,6 +112,7 @@ FetchContent_Declare(
     GIT_SHALLOW    OFF
 )
 FetchContent_Populate(repo-mscclpp)
+endif()
 
 # ccache option
 option(ENABLE_CCACHE "Whether to use ccache" ON)
@@ -130,8 +138,10 @@ include_directories(
     ${repo-cutlass_SOURCE_DIR}/tools/util/include
     ${repo-flashinfer_SOURCE_DIR}/include
     ${repo-flashinfer_SOURCE_DIR}/csrc
-    ${repo-mscclpp_SOURCE_DIR}/include
 )
+if (SGL_KERNEL_ENABLE_MSCCLPP)
+    include_directories(${repo-mscclpp_SOURCE_DIR}/include)
+endif()
 
 set(SGL_KERNEL_CUDA_FLAGS
     "-DNDEBUG"
@@ -139,6 +149,8 @@ set(SGL_KERNEL_CUDA_FLAGS
     "-O3"
     "-Xcompiler"
     "-fPIC"
+    "-device-entity-has-hidden-visibility=false"
+    "-static-global-template-stub=false"
     "-gencode=arch=compute_90,code=sm_90"
     "-std=c++17"
     "-DFLASHINFER_ENABLE_F16"
@@ -175,18 +187,38 @@ if (ENABLE_BELOW_SM90)
     )
 endif()
 
-if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8" OR SGL_KERNEL_ENABLE_SM100A)
+
+if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.9" OR SGL_KERNEL_ENABLE_SM100A)
+    list(APPEND SGL_KERNEL_CUDA_FLAGS
+        "-gencode=arch=compute_100f,code=sm_100f"
+    )
+elseif ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8" OR SGL_KERNEL_ENABLE_SM100A)
     list(APPEND SGL_KERNEL_CUDA_FLAGS
         "-gencode=arch=compute_100,code=sm_100"
         "-gencode=arch=compute_100a,code=sm_100a"
-        "-gencode=arch=compute_101,code=sm_101"
-        "-gencode=arch=compute_101a,code=sm_101a"
-        "-gencode=arch=compute_120,code=sm_120"
-        "-gencode=arch=compute_120a,code=sm_120a"
     )
 else()
     list(APPEND SGL_KERNEL_CUDA_FLAGS
         "-use_fast_math"
+    )
+endif()
+
+# sm101 is changed to sm110 in cuda13
+if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "13.0" OR SGL_KERNEL_ENABLE_SM100A)
+    list(APPEND SGL_KERNEL_CUDA_FLAGS
+        "-gencode=arch=compute_110f,code=sm_110f"
+    )
+elseif ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8" OR SGL_KERNEL_ENABLE_SM100A)
+    list(APPEND SGL_KERNEL_CUDA_FLAGS
+        "-gencode=arch=compute_101,code=sm_101"
+        "-gencode=arch=compute_101a,code=sm_101a"
+    )
+endif()
+
+if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8" OR SGL_KERNEL_ENABLE_SM100A)
+    list(APPEND SGL_KERNEL_CUDA_FLAGS
+        "-gencode=arch=compute_120,code=sm_120"
+        "-gencode=arch=compute_120a,code=sm_120a"
     )
 endif()
 
@@ -224,7 +256,6 @@ string(REPLACE "-D__CUDA_NO_HALF2_OPERATORS__"      "" CMAKE_CUDA_FLAGS "${CMAKE
 
 set(SOURCES
     "csrc/allreduce/custom_all_reduce.cu"
-    "csrc/allreduce/mscclpp_allreduce.cu"
     "csrc/attention/cascade.cu"
     "csrc/attention/cutlass_mla_kernel.cu"
     "csrc/attention/lightning_attention_decode_kernel.cu"
@@ -298,6 +329,9 @@ set(SOURCES
     "${repo-flash-attention_SOURCE_DIR}/csrc/flash_attn/src/flash_fwd_sparse_hdim128_fp16_sm80.cu"
     "${repo-flash-attention_SOURCE_DIR}/csrc/flash_attn/flash_sparse_api.cpp"
 )
+if (SGL_KERNEL_ENABLE_MSCCLPP)
+    list(APPEND SOURCES "csrc/allreduce/mscclpp_allreduce.cu")
+endif()
 
 Python_add_library(common_ops MODULE USE_SABI ${SKBUILD_SABI_VERSION} WITH_SOABI ${SOURCES})
 
@@ -326,15 +360,23 @@ else()
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=1")
 endif()
 
-# mscclpp
-set(MSCCLPP_USE_CUDA ON)
-set(MSCCLPP_BYPASS_GPU_CHECK ON)
-set(MSCCLPP_BUILD_TESTS OFF)
-add_subdirectory(
-    ${repo-mscclpp_SOURCE_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}/mscclpp-build
-)
-target_link_libraries(common_ops PRIVATE ${TORCH_LIBRARIES} c10 cuda cublas cublasLt mscclpp_static)
+# mscclpp (optional)
+if (SGL_KERNEL_ENABLE_MSCCLPP)
+    set(MSCCLPP_USE_CUDA ON)
+    set(MSCCLPP_BYPASS_GPU_CHECK ON)
+    set(MSCCLPP_BUILD_TESTS OFF)
+    add_subdirectory(
+        ${repo-mscclpp_SOURCE_DIR}
+        ${CMAKE_CURRENT_BINARY_DIR}/mscclpp-build
+    )
+endif()
+
+# Base link libraries
+target_link_libraries(common_ops PRIVATE ${TORCH_LIBRARIES} c10 cuda cublas cublasLt)
+if (SGL_KERNEL_ENABLE_MSCCLPP)
+    target_link_libraries(common_ops PRIVATE mscclpp_static)
+    target_compile_definitions(common_ops PRIVATE SGL_KERNEL_ENABLE_MSCCLPP)
+endif()
 
 # flash attention
 target_compile_definitions(common_ops PRIVATE

@@ -5,6 +5,7 @@ import unittest
 from enum import IntEnum
 from typing import Any
 
+import pytest
 import sgl_kernel.allreduce as custom_ops
 import torch
 import torch.distributed as dist
@@ -13,6 +14,10 @@ import torch.distributed as dist
 class MscclContextSelection(IntEnum):
     MSCCL1SHOT1NODELL = 1
     MSCCL1SHOT2NODELL = 2
+
+
+def is_cuda_13():
+    return torch.version.cuda >= "13.0"
 
 
 def _run_correctness_worker(world_size, rank, distributed_init_port, test_sizes):
@@ -126,7 +131,12 @@ class TestMSCCLAllReduce(unittest.TestCase):
     ]
     world_sizes = [8]
 
+    @pytest.mark.skipif(
+        is_cuda_13(),
+        reason="mscclpp is not supported on cuda 13",
+    )
     def test_correctness(self):
+
         for world_size in self.world_sizes:
             available_gpus = torch.cuda.device_count()
             if world_size > available_gpus:

@@ -38,6 +38,7 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
       "int reg_buffer_sz_bytes) -> ()");
   m.impl("all_reduce", torch::kCUDA, &all_reduce);
 
+#if defined(SGL_KERNEL_ENABLE_MSCCLPP)
   m.def("mscclpp_generate_unique_id", &mscclpp_generate_unique_id);
   m.def(
       "mscclpp_init_context(Tensor unique_id, int rank, int world_size, Tensor scratch, Tensor put_buffer, "
@@ -46,6 +47,7 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
 
   m.def("mscclpp_allreduce(int context, Tensor inp, Tensor! out, int nthreads, int nblocks) -> ()");
   m.impl("mscclpp_allreduce", torch::kCUDA, &mscclpp_allreduce);
+#endif
 
   /*
    * From csrc/attention
