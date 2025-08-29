@@ -616,12 +616,16 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
 
         if self.use_flashinfer:
             # Based on profiling results, we need to quantize x to mxfp8 here to achieve better performance
-            x_quant, x_scale = mxfp8_quantize(
-                x, False, alignment=self.hidden_size
-            )  # to mxfp8
-            x_scale = x_scale.view(torch.float8_e4m3fn).reshape(-1)
-            assert x_quant.shape[-1] == self.hidden_size
+            # x_quant, x_scale = mxfp8_quantize(
+            #     x, False, alignment=self.hidden_size
+            # )  # to mxfp8
+            # x_scale = x_scale.view(torch.float8_e4m3fn).reshape(-1)
+            # assert x_quant.shape[-1] == self.hidden_size
             assert TopKOutputChecker.format_is_bypassed(topk_output)
+
+            x_quant = torch.nn.functional.pad(x, (0, self.hidden_size - x.shape[-1]))
+            x_scale = None
+            # print(x_quant.shape, layer.w13_weight.shape)
 
             top_k = topk_output.topk_config.top_k
             router_logits = topk_output.router_logits
