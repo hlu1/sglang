@@ -22,6 +22,10 @@ def _dequantize_k_cache_slow(
     De-quantize the k-cache
     """
     assert dv % tile_size == 0
+    original_ndim = quant_k_cache.ndim
+    if original_ndim == 3:
+        # set block_size = 1
+        quant_k_cache = quant_k_cache.unsqueeze(1)
     num_tiles = dv // tile_size
     num_blocks, block_size, h_k, _ = quant_k_cache.shape
     assert h_k == 1
@@ -45,8 +49,10 @@ def _dequantize_k_cache_slow(
             cur_nope * cur_scales
         )
 
-    result = result.view(num_blocks, block_size, 1, d)
-    return result
+    if original_ndim == 3:
+        return result.view(num_blocks, 1, -1)
+    else:
+        return result.view(num_blocks, block_size, 1, -1)
 
 
 def _dequantize_k_cache_fast_wrapped(
@@ -54,7 +60,10 @@ def _dequantize_k_cache_fast_wrapped(
     dv: int = 512,
     tile_size: int = 128,
 ) -> torch.Tensor:
-    # TODO the final API may be 2D instead of 4D, thus we convert them here
+    original_ndim = quant_k_cache.ndim
+    if original_ndim == 3:
+        # set block_size = 1
+        quant_k_cache = quant_k_cache.unsqueeze(1)
     num_blocks, block_size, _, dim_quant = quant_k_cache.shape
     assert dv == 512
     assert dim_quant == 656
@@ -63,7 +72,10 @@ def _dequantize_k_cache_fast_wrapped(
 
     output = _dequantize_k_cache_fast(quant_k_cache)
 
-    return output.view(num_blocks, block_size, 1, -1)
+    if original_ndim == 3:
+        return output.view(num_blocks, 1, -1)
+    else:
+        return output.view(num_blocks, block_size, 1, -1)
 
 
 def _dequantize_k_cache_fast(quant_k_cache, group_size: int = 128):
