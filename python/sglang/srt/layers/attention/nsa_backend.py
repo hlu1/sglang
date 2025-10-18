@@ -8,7 +8,7 @@ import torch
 
 from sglang.srt.configs.model_config import get_nsa_index_topk, is_deepseek_nsa
 from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
-from sglang.srt.layers.attention.nsa.dequant_k_cache import dequantize_k_cache
+from sglang.srt.layers.attention.nsa.dequant_k_cache import dequantize_k_cache_paged
 from sglang.srt.layers.attention.nsa.nsa_indexer import BaseIndexerMetadata
 from sglang.srt.layers.attention.nsa.quant_k_cache import quantize_k_cache
 from sglang.srt.layers.attention.nsa.transform_index import (
@@ -615,7 +615,9 @@ class NativeSparseAttnBackend(AttentionBackend):
                     page_table_1_flattened = (
                         self.forward_metadata.page_table_1_flattened
                     )
-                    kv_cache = dequantize_k_cache(kv_cache[page_table_1_flattened])
+                    kv_cache = dequantize_k_cache_paged(
+                        kv_cache, page_table_1_flattened
+                    )
                 else:
                     kv_cache = torch.cat([k, k_rope], dim=-1)
 
