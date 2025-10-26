@@ -140,10 +140,12 @@ class NSAIndexerMetadata(BaseIndexerMetadata):
             fast_topk_transform_fused,
             fast_topk_transform_ragged_fused,
             fast_topk_v2,
+            fast_topk,
         )
 
         if not NSA_FUSE_TOPK:
-            return fast_topk_v2(logits, self.get_seqlens_expanded(), topk)
+            return fast_topk(logits, min(topk, logits.shape[-1]), dim=-1).indices
+            # return fast_topk_v2(logits, self.get_seqlens_expanded(), topk)
         elif self.topk_transform_method == TopkTransformMethod.PAGED:
             # NOTE(dark): if fused, we return a transformed page table directly
             return fast_topk_transform_fused(
