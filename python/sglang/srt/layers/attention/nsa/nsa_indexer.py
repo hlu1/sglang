@@ -225,18 +225,19 @@ class Indexer(CustomOp):
 
         q_rope, k_rope = self.rotary_emb(positions, q_rope, k_rope)
 
-        query[..., : self.rope_head_dim] = q_rope
-        key[..., : self.rope_head_dim] = k_rope
-
         if enable_dual_stream:
             current_stream = torch.cuda.current_stream()
             self.alt_stream.wait_stream(current_stream)
+            query[..., : self.rope_head_dim] = q_rope
             query = rotate_activation(query)
 
             with torch.cuda.stream(self.alt_stream):
+                key[..., : self.rope_head_dim] = k_rope
                 key = rotate_activation(key)
             current_stream.wait_stream(self.alt_stream)
         else:
+            query[..., : self.rope_head_dim] = q_rope
+            key[..., : self.rope_head_dim] = k_rope
             query = rotate_activation(query)
             key = rotate_activation(key)
 
@@ -388,11 +389,18 @@ class Indexer(CustomOp):
             q_offset += extend_seq_len
             k_offset += seq_len
 
-        k_fp8 = torch.cat(k_fp8_list, dim=0).view(torch.float8_e4m3fn)
-        k_scale = torch.cat(k_scale_list, dim=0).view(torch.float32).squeeze(-1)
-        kv_fp8 = (k_fp8, k_scale)
-        ks = torch.cat(ks_list, dim=0)
-        ke = torch.cat(ke_list, dim=0)
+        if forward_batch.batch_size == 1:
+            k_fp8 = k_fp8_list[0].view(torch.float8_e4m3fn)
+            k_scale = k_scale_list[0].view(torch.float32).squeeze(-1)
+            kv_fp8 = (k_fp8, k_scale)
+            ks = ks_list[0]
+            ke = ke_list[0]
+        else:
+            k_fp8 = torch.cat(k_fp8_list, dim=0).view(torch.float8_e4m3fn)
+            k_scale = torch.cat(k_scale_list, dim=0).view(torch.float32).squeeze(-1)
+            kv_fp8 = (k_fp8, k_scale)
+            ks = torch.cat(ks_list, dim=0)
+            ke = torch.cat(ke_list, dim=0)
 
         # Suppose there are two requests, with extend_seq_len = [3, 2]
         # and seq_lens = [10, 4]
@@ -461,7 +469,7 @@ class Indexer(CustomOp):
         # MLA: use dummy logits with topk kernel's fast path to generate indices
         # When length <= 2048, naive_topk_cuda directly generates [0,1,...,length-1,-1,...]
         seq_lens_expanded = metadata.get_seqlens_expanded()
-        dummy_logits = torch.zeros(
+        dummy_logits = torch.empty(
             seq_lens_expanded.shape[0],
             self.index_topk,
             dtype=torch.float32,
@@ -610,34 +618,42 @@ class Indexer(CustomOp):
             q_lora, x, positions, enable_dual_stream
         )
 
+        def _set_index_k_scale(k_fp8, k_scale):
+            # k_fp8: (seq_len, head_dim) fp8_e4m3fn
+            # k_buffer: (num_total_tokens + page_size, head_dim) fp8_e4m3fn
+            # k_scale: (seq_len, head_dim // block_size = 1) fp8_e4m3fn
+            # k_scale_cache: (num_total_tokens + page_size, head_dim // block_size = 1) fp8_e4m3fn
+            if not forward_batch.out_cache_loc.is_contiguous():
+                forward_batch.out_cache_loc = forward_batch.out_cache_loc.contiguous()
+            forward_batch.token_to_kv_pool.set_index_k_scale_buffer(
+                layer_id=layer_id,
+                loc=forward_batch.out_cache_loc,
+                index_k=k_fp8,
+                index_k_scale=k_scale,
+            )
+
+        def _get_weights(q_scale):
+            if not self.fuse_wk_and_weights_proj:
+                weights, _ = self.weights_proj(x)
+            weights = self._get_logits_head_gate(weights, q_scale)
+            return weights
+
         if enable_dual_stream:
             current_stream = torch.cuda.current_stream()
             self.alt_stream.wait_stream(current_stream)
 
             q_fp8, q_scale = act_quant(query, self.block_size, self.scale_fmt)
+            weights = _get_weights(q_scale)
+
             with torch.cuda.stream(self.alt_stream):
                 k_fp8, k_scale = act_quant(key, self.block_size, self.scale_fmt)
+                _set_index_k_scale(k_fp8, k_scale)
             current_stream.wait_stream(self.alt_stream)
         else:
             q_fp8, q_scale = act_quant(query, self.block_size, self.scale_fmt)
             k_fp8, k_scale = act_quant(key, self.block_size, self.scale_fmt)
-
-        # k_fp8: (seq_len, head_dim) fp8_e4m3fn
-        # k_buffer: (num_total_tokens + page_size, head_dim) fp8_e4m3fn
-        # k_scale: (seq_len, head_dim // block_size = 1) fp8_e4m3fn
-        # k_scale_cache: (num_total_tokens + page_size, head_dim // block_size = 1) fp8_e4m3fn
-        if not forward_batch.out_cache_loc.is_contiguous():
-            forward_batch.out_cache_loc = forward_batch.out_cache_loc.contiguous()
-        forward_batch.token_to_kv_pool.set_index_k_scale_buffer(
-            layer_id=layer_id,
-            loc=forward_batch.out_cache_loc,
-            index_k=k_fp8,
-            index_k_scale=k_scale,
-        )
-
-        if not self.fuse_wk_and_weights_proj:
-            weights, _ = self.weights_proj(x)
-        weights = self._get_logits_head_gate(weights, q_scale)
+            _set_index_k_scale(k_fp8, k_scale)
+            weights = _get_weights(q_scale)
 
         if is_cuda():
             assert forward_batch.seq_lens_cpu is not None
