@@ -129,6 +129,13 @@ Latency: 25.109 s
 Output throughput: 5226.235 token/s
 ```
 
+To test long-context accuracy, run gsm8k with `--num-shots 20`. The results are very close to the 8 shots results:
+```
+Accuracy: 0.956
+Invalid: 0.000
+Latency: 29.545 s
+Output throughput: 4418.617 token/s
+```
 
 ### Accuracy Test with `gpqa-diamond`
 
@@ -142,3 +149,46 @@ The mean accuracy over 8 runs shows 0.797, which matches the number 79.9 in offi
 Repeat: 8, mean: 0.797
 Scores: ['0.808', '0.798', '0.808', '0.798', '0.783', '0.788', '0.803', '0.793']
 ```
+
+### Accuracy Test with `aime 2025`
+
+Prepare the environment by installing NeMo-Skills in the docker or your own virtual environment:
+
+```
+pip install git+https://github.com/NVIDIA/NeMo-Skills.git --ignore-installed blinker
+```
+
+Run the following script:
+```
+#! /bin/bash
+export NEMO_SKILLS_DISABLE_UNCOMMITTED_CHANGES_CHECK=1
+
+ns prepare_data aime25
+
+PORT=30000
+BACKEND=sglang
+MODEL="deepseek-ai/DeepSeek-V3.2-Exp"
+MODEL_NAME="dsv32-fp8"
+
+echo "Starting AIME25 evaluation with model $MODEL on port $PORT using backend $BACKEND..."
+ns eval \
+  --benchmarks=aime25:4 \
+  --server_type=$BACKEND \
+  --model=$MODEL \
+  --server_address=http://localhost:${PORT}/v1 \
+  --output_dir=nemo_skills_aime25_${MODEL_NAME}_output_${BACKEND}_$(date +%Y%m%d_%H%M%S) \
+  ++max_concurrent_requests=512 \
+  ++server.api_key=dummy \
+  ++inference.tokens_to_generate=64000
+```
+
+Test results:
+
+
+| evaluation_mode    | num_entries | avg_tokens | gen_seconds | symbolic_correct     | no_answer |
+|--------------------|-------------|------------|-------------|-----------------------|-----------|
+| pass@1[avg-of-4]   | 30          | 14410      | 1758        | 85.83% ± 4.19%        | 0.00%     |
+| majority@4         | 30          | 14410      | 1758        | 90.00%                | 0.00%     |
+| pass@4             | 30          | 14410      | 1758        | 93.33%                | 0.00%     |
+
+Note the results of problem#3 with id `aime25-2` is interpreted as false because of nemo-skills fails to match predicted_anwer `016` with expected_answer `16`. If we add 1/30 = 3.33% to the results, the pass@1[avg-of-4] result matches with reference which is 89.3.
