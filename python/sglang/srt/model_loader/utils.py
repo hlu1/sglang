@@ -124,11 +124,12 @@ def post_load_weights(model: nn.Module, model_config: ModelConfig):
 
 def should_deepgemm_weight_requant_ue8m0(weight_block_size):
     """Should we requant fp8 weights into UE8M0 format when loading the model"""
-    return (
-        deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
-        and deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0
-        and weight_block_size is not None
-    )
+    return False
+    # return (
+    #     deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
+    #     and deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0
+    #     and weight_block_size is not None
+    # )
 
 
 def should_async_load(weight: torch.Tensor) -> bool:
