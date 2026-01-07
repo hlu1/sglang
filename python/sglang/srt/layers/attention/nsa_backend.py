@@ -1502,7 +1502,7 @@ class NativeSparseAttnBackend(
         page_table_1: torch.Tensor,
         sm_scale: float,
     ) -> torch.Tensor:
-        from sgl_kernel.flash_mla import flash_mla_sparse_fwd
+        from flash_mla import flash_mla_sparse_fwd
 
         # FlashMLA sparse kernel requires num_heads to be a multiple of 64 (Hopper) or 128 (Blackwell)
         # When using TP, num_heads might be smaller (e.g., 256//8=32)
@@ -1553,7 +1553,8 @@ class NativeSparseAttnBackend(
         metadata: NSAMetadata,
         page_table_1,
     ) -> torch.Tensor:
-        from sgl_kernel.flash_mla import flash_mla_with_kvcache
+        from flash_mla import flash_mla_with_kvcache # good
+        from sgl_kernel.flash_mla import flash_mla_with_kvcache as flash_mla_with_kvcache_sgl # bad
 
         cache_seqlens = metadata.nsa_cache_seqlens_int32
 
@@ -1586,6 +1587,28 @@ class NativeSparseAttnBackend(
             ),
             is_fp8_kvcache=NSA_FLASHMLA_BACKEND_DECODE_COMPUTE_FP8,
         )
+
+        o_test, _ = flash_mla_with_kvcache_sgl(
+            q=q_all,
+            k_cache=kv_cache,
+            cache_seqlens=cache_seqlens,
+            head_dim_v=v_head_dim,
+            tile_scheduler_metadata=metadata.flashmla_metadata.flashmla_metadata,
+            num_splits=metadata.flashmla_metadata.num_splits,
+            softmax_scale=sm_scale,
+            indices=indices,
+            # doc says it is not used, but if pass in None then error
+            block_table=torch.empty(
+                (q_all.shape[0], 0), dtype=torch.int32, device=q_all.device
+            ),
+            is_fp8_kvcache=NSA_FLASHMLA_BACKEND_DECODE_COMPUTE_FP8,
+        )
+        if not torch.allclose(o, o_test, rtol=1e-2, atol=1e-2):
+            diff_absmax = torch.abs(o - o_test).max().item()
+            mismatch_count = (~torch.isclose(o, o_test, rtol=1e-2, atol=1e-2)).sum().item()
+            o_nans = torch.isnan(o).sum().item()
+            o_test_nans = torch.isnan(o_test).sum().item()
+            print(f"Detected mismatch in FlashMLA kernel: diff_absmax: {diff_absmax}, mismatch count: {mismatch_count}, NaNs in o: {o_nans}, NaNs in o_test: {o_test_nans}")
         return o
 
     def _forward_standard_mha(
@@ -1810,7 +1833,7 @@ class NativeSparseAttnBackend(
         )
 
     def _compute_flashmla_metadata(self, cache_seqlens: torch.Tensor, seq_len_q: int):
-        from sgl_kernel.flash_mla import get_mla_metadata
+        from flash_mla import get_mla_metadata
 
         flashmla_metadata, num_splits = get_mla_metadata(
             cache_seqlens=cache_seqlens,
