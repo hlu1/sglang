@@ -62,14 +62,20 @@ from sglang.srt.dllm.mixin.req import ReqDllmMixin
 from sglang.srt.environ import envs
 from sglang.srt.layers.attention.fla.chunk_delta_h import CHUNK_SIZE as FLA_CHUNK_SIZE
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
-from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache, MatchPrefixParams
+from sglang.srt.mem_cache.base_prefix_cache import (
+    BasePrefixCache,
+    EvictParams,
+    MatchPrefixParams,
+)
 from sglang.srt.mem_cache.common import (
+    MAMBA_STATE_PER_REQ_NO_CACHE,
+    MAMBA_STATE_PER_REQ_PREFIX_CACHE,
     alloc_for_decode,
     alloc_for_extend,
     evict_from_tree_cache,
     release_kv_cache,
 )
-from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixKey
 from sglang.srt.mem_cache.swa_memory_pool import SWATokenToKVPoolAllocator
 from sglang.srt.metrics.collector import (
@@ -1817,7 +1823,34 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     def check_decode_mem(self, selected_indices: Optional[List[int]] = None):
         num_tokens = self.new_tokens_required_next_decode(selected_indices)
         evict_from_tree_cache(self.tree_cache, num_tokens)
-        return self.token_to_kv_pool_allocator.available_size() >= num_tokens
+        kv_ok = self.token_to_kv_pool_allocator.available_size() >= num_tokens
+        mamba_ok = self._check_mamba_decode_mem()
+        return kv_ok and mamba_ok
+
+    def _check_mamba_decode_mem(self) -> bool:
+        """Return True if the Mamba pool has headroom for at least one incoming request.
+
+        The decode step itself does not allocate new Mamba slots (each running request
+        already holds its slot). However, requests completing prefill are about to
+        enter the decode batch via alloc_req_slots(), which needs `factor` Mamba slots
+        per request. If the pool is exhausted and the tree cache has nothing left to
+        evict, alloc_req_slots() would crash with RuntimeError. Returning False here
+        instead triggers retract_decode(), freeing slots before that point is reached.
+        """
+        if not isinstance(self.req_to_token_pool, HybridReqToTokenPool):
+            return True  # non-Mamba model, nothing to check
+        factor = (
+            MAMBA_STATE_PER_REQ_PREFIX_CACHE
+            if self.tree_cache.supports_mamba()
+            else MAMBA_STATE_PER_REQ_NO_CACHE
+        )
+        mamba_pool = self.req_to_token_pool.mamba_pool
+        if mamba_pool.available_size() >= factor:
+            return True
+        # Try to free Mamba slots cached in the radix tree before declaring OOM.
+        if self.tree_cache.supports_mamba():
+            self.tree_cache.evict(EvictParams(num_tokens=0, mamba_num=factor))
+        return mamba_pool.available_size() >= factor
 
     def retract_all(self, server_args: ServerArgs):
         retracted_reqs = self.reqs
