@@ -2618,8 +2618,8 @@ class Scheduler(
         if self.enable_hierarchical_cache:
             self.tree_cache.flush_write_through_acks()
 
-        # Check if decode out of memory
-        if (kv_full_retract_flag := not batch.check_decode_mem()) or (
+        # Check if decode out of memory (KV or Mamba pool)
+        if (mem_full_retract_flag := not batch.check_decode_mem()) or (
             TEST_RETRACT and self.forward_ct % TEST_RETRACT_INTERVAL == 0
         ):
             old_available_tokens = self.token_to_kv_pool_allocator.available_size()
@@ -2653,12 +2653,12 @@ class Scheduler(
                 )
 
             msg_prefix = (
-                "KV cache pool is full. Retract requests. "
-                if kv_full_retract_flag
+                "Memory (KV/Mamba) pool is full. Retract requests. "
+                if mem_full_retract_flag
                 else "Testing retraction. "
             )
             msg_details = f"#retracted_reqs: {len(retracted_reqs)}, #new_tokens_gained: {new_token_gained}"
-            if kv_full_retract_flag:
+            if mem_full_retract_flag:
                 msg_details += (
                     f", #new_token_ratio: {old_ratio:.4f} -> {new_token_ratio:.4f}"
                 )
