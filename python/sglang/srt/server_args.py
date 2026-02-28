@@ -1777,10 +1777,11 @@ class ServerArgs:
                     self.disable_radix_cache = True
                     self.disable_overlap_schedule = False
             else:
-                logger.warning(
-                    f"Disabling radix cache since speculative decoding for {model_arch} is not supported with radix cache yet."
-                )
-                self.disable_radix_cache = True
+                if not self.disable_radix_cache:
+                    raise ValueError(
+                        f"Speculative decoding for {model_arch} is not compatible with radix cache when using --mamba-scheduler-strategy no_buffer."
+                        "To use radix cache with speculative decoding, please use --mamba-scheduler-strategy extra_buffer and set SGLANG_ENABLE_SPEC_V2=1."
+                    )
 
     def _handle_sampling_backend(self):
         if self.sampling_backend is None:
@@ -2577,9 +2578,6 @@ class ServerArgs:
             assert (
                 self.disaggregation_decode_tp is None
             ), "Cannot set --disaggregation-decode-tp for the decode engine."
-            assert (
-                self.disaggregation_decode_dp is None
-            ), "Cannot set --disaggregation-decode-dp for the decode engine."
 
             self.disable_radix_cache = True
             logger.warning("KV cache is forced as chunk cache for decode server")
@@ -2590,8 +2588,6 @@ class ServerArgs:
             ), "Prefill server does not support 'fake' as the transfer backend"
             if self.disaggregation_decode_tp is None:
                 self.disaggregation_decode_tp = self.tp_size
-            if self.disaggregation_decode_dp is None:
-                self.disaggregation_decode_dp = self.dp_size
 
             self.disaggregation_prefill_pp = self.pp_size
             self.validate_disagg_tp_size(self.tp_size, self.disaggregation_decode_tp)
