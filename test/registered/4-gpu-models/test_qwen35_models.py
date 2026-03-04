@@ -54,6 +54,8 @@ class TestQwen35FP4(CustomTestCase):
                 "trtllm_mha",
                 "--quantization",
                 "modelopt_fp4",
+                "--model-loader-extra-config",
+                '{"enable_multithread_load": true,"num_threads": 64}',
             ],
         )
 
@@ -120,6 +122,8 @@ class TestQwen35FP4MTP(CustomTestCase):
                 "4",
                 "--mem-fraction-static",
                 "0.8",
+                "--model-loader-extra-config",
+                '{"enable_multithread_load": true,"num_threads": 64}',
             ],
         )
 
@@ -194,6 +198,8 @@ class TestQwen35FP4MTPV2(CustomTestCase):
                 "4",
                 "--mem-fraction-static",
                 "0.8",
+                "--model-loader-extra-config",
+                '{"enable_multithread_load": true,"num_threads": 64}',
             ],
         )
 
