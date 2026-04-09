@@ -388,6 +388,28 @@ class MambaPool:
         self.copy_from(src_index, dst_index)
         return dst_index
 
+    def get_cpu_copy(self, indices):
+        torch.cuda.synchronize()
+        conv_cpu = [
+            conv[:, indices].to("cpu", non_blocking=True)
+            for conv in self.mamba_cache.conv
+        ]
+        temporal_cpu = self.mamba_cache.temporal[:, indices].to(
+            "cpu", non_blocking=True
+        )
+        torch.cuda.synchronize()
+        return conv_cpu, temporal_cpu
+
+    def load_cpu_copy(self, mamba_cache_cpu, indices):
+        conv_cpu, temporal_cpu = mamba_cache_cpu
+        torch.cuda.synchronize()
+        for i, conv in enumerate(self.mamba_cache.conv):
+            conv[:, indices] = conv_cpu[i].to(conv.device, non_blocking=True)
+        self.mamba_cache.temporal[:, indices] = temporal_cpu.to(
+            self.mamba_cache.temporal.device, non_blocking=True
+        )
+        torch.cuda.synchronize()
+
     def get_contiguous_buf_infos(self):
         """
         Get buffer info for RDMA registration.
@@ -1408,6 +1430,21 @@ class HybridLinearKVPool(KVCache):
 
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
         self.full_kv_pool.move_kv_cache(tgt_loc, src_loc)
+
+    def get_cpu_copy(self, indices, mamba_indices=None):
+        kv_cpu = self.full_kv_pool.get_cpu_copy(indices)
+        mamba_cpu = (
+            self.mamba_pool.get_cpu_copy(mamba_indices)
+            if mamba_indices is not None
+            else None
+        )
+        return kv_cpu, mamba_cpu
+
+    def load_cpu_copy(self, cache_cpu, indices, mamba_indices=None):
+        kv_cpu, mamba_cpu = cache_cpu
+        self.full_kv_pool.load_cpu_copy(kv_cpu, indices)
+        if mamba_cpu is not None and mamba_indices is not None:
+            self.mamba_pool.load_cpu_copy(mamba_cpu, mamba_indices)
 
     def get_v_head_dim(self):
         return self.full_kv_pool.get_value_buffer(0).shape[-1]
