@@ -527,7 +527,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     "runai-model-streamer[s3,gcs,azure]>=0.15.7"
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-   python3 -m pip install "nvidia-cutlass-dsl>=4.4.1" "nvidia-cutlass-dsl-libs-base>=4.4.1" --force-reinstall --no-deps;
+   python3 -m pip install "nvidia-cutlass-dsl>=4.4.1" "nvidia-cutlass-dsl-libs-base>=4.4.1" --force-reinstall --no-deps; \
+   if [ "${CUDA_VERSION%%.*}" = "13" ]; then \
+       python3 -m pip install "nvidia-cutlass-dsl-libs-cu13>=4.4.2" --no-deps ; \
+   fi
 
 # Patching packages for CUDA 12/13 compatibility
 # TODO: Remove when torch version covers these packages
