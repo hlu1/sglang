@@ -209,12 +209,15 @@ class MambaAttnBackendBase(AttentionBackend):
                         query_start_loc, forward_batch
                     )
 
-                    (
-                        track_ssm_h_src,
-                        track_ssm_h_dst,
-                        track_ssm_final_src,
-                        track_ssm_final_dst,
-                    ) = self._init_track_ssm_indices(mamba_cache_indices, forward_batch)
+                    if self._needs_triton_ssm_tracking():
+                        (
+                            track_ssm_h_src,
+                            track_ssm_h_dst,
+                            track_ssm_final_src,
+                            track_ssm_final_dst,
+                        ) = self._init_track_ssm_indices(
+                            mamba_cache_indices, forward_batch
+                        )
         else:
             raise ValueError(f"Invalid forward mode: {forward_batch.forward_mode=}")
 
@@ -239,6 +242,14 @@ class MambaAttnBackendBase(AttentionBackend):
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         self.forward_metadata = self._forward_metadata(forward_batch)
+
+    def _needs_triton_ssm_tracking(self) -> bool:
+        """Whether _init_track_ssm_indices should run during metadata init.
+
+        Subclasses that use a different SSM state tracking mechanism (e.g.
+        FlashInfer checkpoints) can override this to return False.
+        """
+        return True
 
     def _init_track_conv_indices(
         self, query_start_loc: torch.Tensor, forward_batch: ForwardBatch
@@ -631,6 +642,26 @@ class MambaAttnBackendBase(AttentionBackend):
                 ssm_states[forward_metadata.track_ssm_final_dst] = ssm_states[
                     forward_metadata.track_ssm_final_src
                 ]
+
+    @staticmethod
+    def _track_mamba_state_extend_flashinfer(
+        state_checkpoints: torch.Tensor,
+        ssm_states: torch.Tensor,
+        extract_src: torch.Tensor,
+        extract_dst: torch.Tensor,
+    ):
+        """
+        Track and copy SSM states during extend using FlashInfer checkpoint API.
+
+        FlashInfer writes intermediate SSM states at regular checkpoint intervals.
+        For each tracked request, we extract the checkpoint at the desired cache
+        boundary and copy it to the persistent cache slot. Sequences shorter than
+        one checkpoint interval have no checkpoint and are simply skipped.
+        """
+        if extract_src.numel() > 0:
+            ssm_states[extract_dst] = state_checkpoints[extract_src].to(
+                ssm_states.dtype
+            )
 
 
 class Mamba2AttnBackend(MambaAttnBackendBase):

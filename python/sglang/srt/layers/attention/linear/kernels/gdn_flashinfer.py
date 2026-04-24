@@ -190,6 +190,7 @@ class FlashInferGDNKernel(LinearAttnKernelBase):
         total_seq_len = q.shape[1]
         num_v_heads = v.shape[2]
         head_v_dim = v.shape[3]
+        head_k_dim = q.shape[3]
 
         q_fi = l2norm_fwd(q[0].contiguous())
         k_fi = l2norm_fwd(k[0].contiguous())
@@ -199,6 +200,32 @@ class FlashInferGDNKernel(LinearAttnKernelBase):
         alpha_fi = torch.exp(g[0].to(torch.float32))
         beta_fi = beta[0].to(torch.float32)
 
+        # Checkpoint parameters for mamba radix cache reuse
+        checkpoint_cu_starts = kwargs.get("checkpoint_cu_starts", None)
+        checkpoint_every_n_tokens = kwargs.get("checkpoint_every_n_tokens", None)
+        total_checkpoints = kwargs.get("total_checkpoints", 0)
+
+        checkpoint_kwargs = {}
+        state_checkpoints = None
+        if (
+            checkpoint_cu_starts is not None
+            and checkpoint_every_n_tokens is not None
+            and total_checkpoints > 0
+        ):
+            state_checkpoints = torch.empty(
+                total_checkpoints,
+                num_v_heads,
+                head_v_dim,
+                head_k_dim,
+                dtype=torch.float32,
+                device=q.device,
+            )
+            checkpoint_kwargs = {
+                "state_checkpoints": state_checkpoints,
+                "checkpoint_cu_starts": checkpoint_cu_starts,
+                "checkpoint_every_n_tokens": checkpoint_every_n_tokens,
+            }
+
         if self.is_sm100plus:
             # Negative indices (e.g. -1) are padding markers for slots not yet
             # assigned to a real sequence; clamp them to 0 (the reserved dummy
@@ -206,7 +233,6 @@ class FlashInferGDNKernel(LinearAttnKernelBase):
             ssm_cache_indices = cache_indices.clamp(min=0).to(torch.int64)
             num_seqs = ssm_cache_indices.shape[0]
             num_sab_heads = max(q.shape[2], num_v_heads)
-            head_k_dim = q.shape[3]
             # Pre-allocate bf16 output_state so the kernel compiles and writes the
             # bf16 state path directly, avoiding a fp32 allocation and a subsequent
             # fp32->bf16 conversion in the scatter step.
@@ -228,6 +254,7 @@ class FlashInferGDNKernel(LinearAttnKernelBase):
                 cu_seqlens=query_start_loc,  # already int32
                 use_qk_l2norm_in_kernel=False,
                 output_state=output_state_fi,
+                **checkpoint_kwargs,
             )
         else:
             # SM90: preserve original negative-index handling (remap to last slot).
@@ -249,6 +276,7 @@ class FlashInferGDNKernel(LinearAttnKernelBase):
                 output_final_state=True,
                 cu_seqlens=query_start_loc.to(torch.int64),
                 use_qk_l2norm_in_kernel=False,
+                **checkpoint_kwargs,
             )
 
         # Write back state to pool
@@ -262,8 +290,8 @@ class FlashInferGDNKernel(LinearAttnKernelBase):
         core_attn_out = output_fi.view(1, total_seq_len, num_v_heads, head_v_dim)
 
         # Return (output, last_recurrent_state, h) to match Triton kernel interface.
-        # h=None since FlashInfer doesn't provide intermediate states.
-        return core_attn_out, None, None
+        # When checkpoints are enabled, h=state_checkpoints for mamba cache reuse.
+        return core_attn_out, None, state_checkpoints
 
     # ---- target_verify (MTP) ----
 

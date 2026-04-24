@@ -45,6 +45,13 @@ class ForwardMetadata:
     mamba_track_mask_indices: Optional[torch.Tensor] = None
     conv_states_mask_indices: Optional[torch.Tensor] = None
 
+    # For FlashInfer prefill checkpoint-based mamba cache reuse
+    fi_ckpt_cu_starts: Optional[torch.Tensor] = None
+    fi_ckpt_interval: Optional[int] = None
+    fi_ckpt_total: int = 0
+    fi_ckpt_extract_src: Optional[torch.Tensor] = None
+    fi_ckpt_extract_dst: Optional[torch.Tensor] = None
+
 
 @dataclass(kw_only=True)
 class Mamba2Metadata(ForwardMetadata):

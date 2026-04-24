@@ -258,6 +258,10 @@ class GDNAttnBackend(MambaAttnBackendBase):
         self.verify_intermediate_state_indices = torch.arange(
             self.req_to_token_pool.size, dtype=torch.int32, device=model_runner.device
         )
+        self._use_flashinfer_prefill = prefill_backend.is_flashinfer()
+
+    def _needs_triton_ssm_tracking(self) -> bool:
+        return not self._use_flashinfer_prefill
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         super().init_forward_metadata(forward_batch)
@@ -270,6 +274,8 @@ class GDNAttnBackend(MambaAttnBackendBase):
                     self.forward_metadata.mamba_track_mask_indices
                 ]
             )
+            if self._use_flashinfer_prefill:
+                self._prepare_flashinfer_checkpoints(forward_batch)
 
     def forward_decode(
         self,
@@ -345,6 +351,60 @@ class GDNAttnBackend(MambaAttnBackendBase):
         )
 
         return core_attn_out
+
+    def _prepare_flashinfer_checkpoints(
+        self,
+        forward_batch: ForwardBatch,
+    ):
+        """Compute FlashInfer checkpoint parameters and extract indices.
+
+        Stores results in self.forward_metadata so they are computed once
+        per batch rather than per layer.
+        """
+        from sglang.srt.server_args import get_global_server_args
+
+        interval = get_global_server_args().mamba_prefill_checkpoint_interval
+        metadata = self.forward_metadata
+
+        # Build checkpoint_cu_starts from extend_seq_lens
+        extend_seq_lens = forward_batch.extend_seq_lens
+        num_checkpoints_per_seq = extend_seq_lens // interval
+        checkpoint_cu_starts = torch.zeros(
+            len(extend_seq_lens) + 1,
+            dtype=torch.int64,
+            device=extend_seq_lens.device,
+        )
+        torch.cumsum(num_checkpoints_per_seq, dim=0, out=checkpoint_cu_starts[1:])
+
+        # Compute extract src/dst for tracked sequences
+        mamba_track_mask = forward_batch.mamba_track_mask
+        mamba_track_indices = forward_batch.mamba_track_indices
+        mamba_track_seqlens = forward_batch.mamba_track_seqlens
+        prefix_lens = forward_batch.extend_prefix_lens
+
+        # Move to CPU for index computation
+        mask_cpu = mamba_track_mask.cpu()
+        track_indices_cpu = mamba_track_indices.cpu()
+        track_seqlens_cpu = mamba_track_seqlens.cpu()
+        prefix_lens_cpu = prefix_lens.cpu()
+        cu_starts_cpu = checkpoint_cu_starts.cpu()
+
+        metadata.fi_ckpt_cu_starts = checkpoint_cu_starts
+        metadata.fi_ckpt_interval = interval
+        metadata.fi_ckpt_total = cu_starts_cpu[-1].item()
+
+        # Per-request: which checkpoint do we want?
+        want_local_idx = (track_seqlens_cpu - prefix_lens_cpu) // interval - 1
+
+        # Only track requests that are marked AND have at least one checkpoint
+        mask_cpu = mask_cpu & (want_local_idx >= 0)
+
+        extract_src = cu_starts_cpu[:-1][mask_cpu] + want_local_idx[mask_cpu]
+        extract_dst = track_indices_cpu[mask_cpu]
+
+        device = extend_seq_lens.device
+        metadata.fi_ckpt_extract_src = extract_src.to(device, non_blocking=True)
+        metadata.fi_ckpt_extract_dst = extract_dst.to(device, non_blocking=True)
 
     def forward_extend(
         self,
@@ -452,6 +512,16 @@ class GDNAttnBackend(MambaAttnBackendBase):
             )
         else:
             g, beta = fused_gdn_gating(layer.A_log, a, b, layer.dt_bias)
+
+            # Build kernel kwargs for FlashInfer checkpoint API
+            fi_ckpt_kwargs = {}
+            if forward_metadata.fi_ckpt_cu_starts is not None:
+                fi_ckpt_kwargs = {
+                    "checkpoint_cu_starts": forward_metadata.fi_ckpt_cu_starts,
+                    "checkpoint_every_n_tokens": forward_metadata.fi_ckpt_interval,
+                    "total_checkpoints": forward_metadata.fi_ckpt_total,
+                }
+
             core_attn_out, last_recurrent_state, h = self.kernel_dispatcher.extend(
                 q=query,
                 k=key,
@@ -461,6 +531,7 @@ class GDNAttnBackend(MambaAttnBackendBase):
                 ssm_states=ssm_states,
                 cache_indices=cache_indices,
                 query_start_loc=query_start_loc,
+                **fi_ckpt_kwargs,
             )
 
             if (is_npu() or is_cpu()) and last_recurrent_state is not None:
@@ -469,7 +540,16 @@ class GDNAttnBackend(MambaAttnBackendBase):
                 )
                 ssm_states[cache_indices] = last_recurrent_state
 
-            if h is not None:
+            if forward_metadata.fi_ckpt_extract_src is not None and h is not None:
+                # FlashInfer path: h is state_checkpoints
+                self._track_mamba_state_extend_flashinfer(
+                    h,
+                    ssm_states,
+                    forward_metadata.fi_ckpt_extract_src,
+                    forward_metadata.fi_ckpt_extract_dst,
+                )
+            elif h is not None:
+                # Triton path: h is intermediate hidden states
                 self._track_mamba_state_extend(
                     forward_batch, h, ssm_states, forward_metadata
                 )

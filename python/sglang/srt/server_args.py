@@ -557,6 +557,7 @@ class ServerArgs:
     mamba_full_memory_ratio: float = 0.9
     mamba_scheduler_strategy: str = "auto"
     mamba_track_interval: int = 256
+    mamba_prefill_checkpoint_interval: int = 1024
     linear_attn_backend: str = "triton"
     linear_attn_decode_backend: Optional[str] = None
     linear_attn_prefill_backend: Optional[str] = None
@@ -2284,6 +2285,14 @@ class ServerArgs:
                     % min(FLA_CHUNK_SIZE, self.page_size)
                     == 0
                 ), f"For SSM models with extra buffer, either FLA_CHUNK_SIZE or page_size must be divisible by the other, got {FLA_CHUNK_SIZE=}, {self.page_size=}"
+            assert (
+                self.mamba_prefill_checkpoint_interval % self.mamba_cache_chunk_size
+                == 0
+                and self.mamba_prefill_checkpoint_interval > 0
+            ), (
+                f"mamba_prefill_checkpoint_interval must be a positive multiple of {self.mamba_cache_chunk_size=}, "
+                f"got {self.mamba_prefill_checkpoint_interval}"
+            )
         elif not self.disable_radix_cache:  # no_buffer
             if self.page_size is not None and self.page_size != 1:
                 logger.warning(
@@ -5465,6 +5474,14 @@ class ServerArgs:
             type=int,
             default=ServerArgs.mamba_track_interval,
             help="The interval to track the mamba state during decode.",
+        )
+        parser.add_argument(
+            "--mamba-prefill-checkpoint-interval",
+            type=int,
+            default=ServerArgs.mamba_prefill_checkpoint_interval,
+            help="Checkpoint interval (in tokens) for FlashInfer GDN prefill. "
+            "Controls how often intermediate SSM states are saved during prefill "
+            "for mamba radix cache reuse. Must be a multiple of self.mamba_cache_chunk_size.",
         )
         parser.add_argument(
             "--mamba-backend",
